@@ -69,28 +69,48 @@ if [ -f "$CRON_FILE" ]; then
     # Создаем временный файл с безопасным именем
     temp_cron="/tmp/crontab.tmp.$$"
     
-    # Удаляем старую задачу если есть
-    grep -v "domain-router.sh update" "$CRON_FILE" > "$temp_cron"
+    # Удаляем старые задачи domain-router если есть
+    if grep -q "domain-router" "$CRON_FILE"; then
+        grep -v "domain-router" "$CRON_FILE" > "$temp_cron"
+        echo "✓ Removed old cron entries"
+    else
+        cp "$CRON_FILE" "$temp_cron"
+    fi
     
     # Добавляем новую задачу
     echo "0 6 * * * $INSTALL_DIR/domain-router.sh update" >> "$temp_cron"
     
     # Проверяем, что временный файл создался корректно
-    if [ -f "$temp_cron" ]; then
-        mv "$temp_cron" "$CRON_FILE"
+    if [ -f "$temp_cron" ] && [ -s "$temp_cron" ]; then
+        mv "$temp_cron" "$CRON_FILE" && \
+        /opt/etc/init.d/S10cron restart >/dev/null 2>&1
         
-        # Перезапускаем cron
-        /opt/etc/init.d/S10cron restart
-        echo "✓ Cron job added (daily update at 6:00 AM)"
+        if [ $? -eq 0 ]; then
+            echo "✓ Cron job added (daily update at 6:00 AM)"
+        else
+            echo "! Cron job added but service restart failed"
+        fi
     else
         echo "! Failed to update cron file"
+        rm -f "$temp_cron"
     fi
 else
-    echo "! Cron not found, manual cron setup required"
+    echo "! Cron file not found: $CRON_FILE"
+    echo "  Please add manually: 0 6 * * * $INSTALL_DIR/domain-router.sh update"
 fi
 
 # Создаем символическую ссылку для удобства
-ln -sf "$INSTALL_DIR/domain-router.sh" "/opt/bin/domain-router" 2>/dev/null
+if [ -d "/opt/bin" ]; then
+    ln -sf "$INSTALL_DIR/domain-router.sh" "/opt/bin/domain-router" 2>/dev/null
+    if [ $? -eq 0 ]; then
+        echo "✓ Symlink created: /opt/bin/domain-router"
+    else
+        echo "! Failed to create symlink, you can run $INSTALL_DIR/domain-router.sh directly"
+    fi
+else
+    echo "! /opt/bin directory not found, symlink not created"
+    echo "  You can run $INSTALL_DIR/domain-router.sh directly"
+fi
 
 echo
 echo "============================================"
@@ -109,6 +129,7 @@ echo "  domain-router status           - Show status"
 echo "  domain-router update           - Manual update"
 echo "  domain-router force-update     - Force full update"
 echo "  domain-router cleanup          - Remove unused routes"
+echo "  domain-router test-config      - Test configuration"
 echo
 
 # ===== uninstall.sh =====
@@ -126,12 +147,19 @@ echo "Uninstalling Domain Router..."
 # Удаляем из cron
 if [ -f "$CRON_FILE" ]; then
     temp_cron="/tmp/crontab.tmp.$$"
-    grep -v "domain-router.sh" "$CRON_FILE" > "$temp_cron"
     
-    if [ -f "$temp_cron" ]; then
-        mv "$temp_cron" "$CRON_FILE"
-        /opt/etc/init.d/S10cron restart
-        echo "✓ Cron job removed"
+    if grep -q "domain-router" "$CRON_FILE"; then
+        grep -v "domain-router" "$CRON_FILE" > "$temp_cron"
+        
+        if [ -f "$temp_cron" ]; then
+            mv "$temp_cron" "$CRON_FILE"
+            /opt/etc/init.d/S10cron restart >/dev/null 2>&1
+            echo "✓ Cron job removed"
+        else
+            echo "! Failed to update cron file"
+        fi
+    else
+        echo "✓ No cron entries found"
     fi
 fi
 
