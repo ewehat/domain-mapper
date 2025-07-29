@@ -54,6 +54,10 @@ load_settings() {
 
 # Логирование
 log_message() {
+    # Создаем директорию скрипта если она не существует
+    if [ ! -d "$SCRIPT_DIR" ]; then
+        mkdir -p "$SCRIPT_DIR" 2>/dev/null || return 0
+    fi
     echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$LOG_FILE"
 }
 
