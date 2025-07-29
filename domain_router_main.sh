@@ -39,6 +39,17 @@ load_settings() {
         log_message "ERROR: Missing required settings (KEENETIC_HOST or KEENETIC_USER)"
         return 1
     fi
+    
+    # Проверяем, что пароль не пустой
+    if [ -z "$KEENETIC_PASS" ]; then
+        log_message "WARNING: KEENETIC_PASS is empty, API requests may fail"
+    fi
+    
+    # Проверяем, что VPN_INTERFACE указан
+    if [ -z "$VPN_INTERFACE" ]; then
+        log_message "ERROR: VPN_INTERFACE not specified"
+        return 1
+    fi
 }
 
 # Логирование
@@ -51,14 +62,30 @@ resolve_domain() {
     local domain="$1"
     local ips=""
     
+    # Проверяем валидность домена
+    if ! validate_domain "$domain"; then
+        log_message "ERROR: Invalid domain format: $domain"
+        return 1
+    fi
+    
     # Пробуем разные DNS серверы
     for dns in $(echo "$DNS_SERVERS" | tr ',' ' '); do
+        # Используем nslookup с более надежным парсингом
         ips=$(nslookup "$domain" "$dns" 2>/dev/null | \
-              grep -A10 "Name:" | \
-              grep "Address:" | \
-              awk '{print $2}' | \
-              grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | \
-              sort -u)
+              awk '/^Address: / { 
+                  if ($2 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) 
+                      print $2 
+              }' | \
+              sort -u | \
+              head -10)  # Ограничиваем количество IP
+        
+        # Если nslookup не сработал, пробуем dig (если доступен)
+        if [ -z "$ips" ] && command -v dig >/dev/null 2>&1; then
+            ips=$(dig +short "$domain" @"$dns" 2>/dev/null | \
+                  grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | \
+                  sort -u | \
+                  head -10)
+        fi
         
         if [ -n "$ips" ]; then
             break
@@ -66,7 +93,7 @@ resolve_domain() {
     done
     
     if [ -z "$ips" ]; then
-        log_message "ERROR: Failed to resolve $domain"
+        log_message "ERROR: Failed to resolve $domain using DNS servers: $DNS_SERVERS"
         return 1
     fi
     
@@ -87,25 +114,48 @@ update_ip_cache() {
     local domain="$2"
     local temp_file="/tmp/ip-cache-temp-$$"
     
+    # Валидация входных параметров
+    if [ -z "$ip" ] || [ -z "$domain" ]; then
+        log_message "ERROR: update_ip_cache called with empty parameters"
+        return 1
+    fi
+    
+    # Проверяем формат IP
+    if ! echo "$ip" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+        log_message "ERROR: Invalid IP format: $ip"
+        return 1
+    fi
+    
     # Создаем временный файл с уникальным именем
     touch "$temp_file"
     chmod 600 "$temp_file"
     
-    if [ -f "$IP_CACHE_FILE" ]; then
-        # Удаляем старые записи для этого домена
-        grep -v " $domain\(,\|$\)" "$IP_CACHE_FILE" > "$temp_file" 2>/dev/null || touch "$temp_file"
-        mv "$temp_file" "$IP_CACHE_FILE" 2>/dev/null
+    # Создаем кэш файл если не существует
+    if [ ! -f "$IP_CACHE_FILE" ]; then
+        touch "$IP_CACHE_FILE"
+        chmod 600 "$IP_CACHE_FILE"
     fi
     
+    # Удаляем старые записи для этого домена
+    grep -v " .*\b$domain\b" "$IP_CACHE_FILE" > "$temp_file" 2>/dev/null || touch "$temp_file"
+    
     # Добавляем новую запись или обновляем существующую
-    if grep -q "^$ip " "$IP_CACHE_FILE" 2>/dev/null; then
+    if grep -q "^$ip " "$temp_file" 2>/dev/null; then
         # IP уже есть, добавляем домен к списку
-        sed "s/^$ip \(.*\)/$ip \1,$domain/" "$IP_CACHE_FILE" > "$temp_file"
-        mv "$temp_file" "$IP_CACHE_FILE"
+        sed "s/^$ip \(.*\)/$ip \1,$domain/" "$temp_file" > "$temp_file.new"
+        mv "$temp_file.new" "$temp_file"
     else
         # Новый IP
-        echo "$ip $domain" >> "$IP_CACHE_FILE"
+        echo "$ip $domain" >> "$temp_file"
+    fi
+    
+    # Заменяем оригинальный файл если операция прошла успешно
+    if [ -f "$temp_file" ]; then
+        mv "$temp_file" "$IP_CACHE_FILE"
+    else
+        log_message "ERROR: Failed to update IP cache"
         rm -f "$temp_file"
+        return 1
     fi
 }
 
@@ -115,29 +165,40 @@ remove_from_cache() {
     local temp_file="/tmp/ip-cache-temp-$$"
     
     if [ ! -f "$IP_CACHE_FILE" ]; then
-        return
+        return 0
     fi
     
     touch "$temp_file"
     chmod 600 "$temp_file"
     
     # Удаляем домен из всех записей
-    while IFS=' ' read -r ip domains; do
+    while IFS=' ' read -r ip domains || [ -n "$ip" ]; do
         if [ -n "$ip" ] && [ -n "$domains" ]; then
-            # Удаляем домен из списка
-            new_domains=$(echo "$domains" | sed "s/\(,\|^\)$domain\(,\|$\)//g; s/^,//; s/,$//; s/,,/,/g")
+            # Удаляем домен из списка, обрабатывая различные позиции
+            new_domains=$(echo "$domains" | sed -e "s/^${domain},//g" -e "s/,${domain},/,/g" -e "s/,${domain}$//g" -e "s/^${domain}$//g")
             
+            # Очищаем лишние запятые
+            new_domains=$(echo "$new_domains" | sed -e 's/^,\+//' -e 's/,\+$//' -e 's/,\+/,/g')
+            
+            # Сохраняем запись только если остались домены
             if [ -n "$new_domains" ] && [ "$new_domains" != "," ]; then
                 echo "$ip $new_domains" >> "$temp_file"
             fi
         fi
     done < "$IP_CACHE_FILE"
     
-    if [ -f "$temp_file" ] && [ -s "$temp_file" ]; then
-        mv "$temp_file" "$IP_CACHE_FILE"
+    # Заменяем файл только если операция прошла успешно
+    if [ -f "$temp_file" ]; then
+        if [ -s "$temp_file" ]; then
+            mv "$temp_file" "$IP_CACHE_FILE"
+        else
+            # Если файл пустой, создаем пустый кэш
+            > "$IP_CACHE_FILE"
+            rm -f "$temp_file"
+        fi
     else
-        > "$IP_CACHE_FILE"
-        rm -f "$temp_file"
+        log_message "ERROR: Failed to update cache file"
+        return 1
     fi
 }
 
@@ -176,7 +237,7 @@ keenetic_api_request() {
     case "$method" in
         "GET")
             response=$(wget -q --user="$KEENETIC_USER" \
-                           --password="$KEENETIC_PASS" \
+                           --password-file="$temp_passwd_file" \
                            -O - \
                            "http://$KEENETIC_HOST$endpoint" 2>/dev/null)
             exit_code=$?
@@ -185,7 +246,7 @@ keenetic_api_request() {
             response=$(wget -q --post-data="$data" \
                            --header="Content-Type: application/json" \
                            --user="$KEENETIC_USER" \
-                           --password="$KEENETIC_PASS" \
+                           --password-file="$temp_passwd_file" \
                            -O - \
                            "http://$KEENETIC_HOST$endpoint" 2>/dev/null)
             exit_code=$?
@@ -193,7 +254,7 @@ keenetic_api_request() {
         "DELETE")
             response=$(wget -q --method=DELETE \
                            --user="$KEENETIC_USER" \
-                           --password="$KEENETIC_PASS" \
+                           --password-file="$temp_passwd_file" \
                            --post-data="$data" \
                            --header="Content-Type: application/json" \
                            -O - \
@@ -350,8 +411,19 @@ validate_domain() {
         return 1
     fi
     
+    # Проверка на минимальную длину
+    if [ ${#domain} -lt 1 ]; then
+        return 1
+    fi
+    
     # Проверка базового формата домена
-    echo "$domain" | grep -qE '^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$|^[a-zA-Z0-9]$'
+    # Домен не может начинаться или заканчиваться точкой или тире
+    case "$domain" in
+        .*|*.|*-|-*|*..*|*--*) return 1 ;;
+    esac
+    
+    # Проверка на допустимые символы и структуру
+    echo "$domain" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$'
 }
 
 # Добавление нового домена
@@ -482,7 +554,11 @@ show_status() {
 
 # Основная логика
 main() {
-    load_settings
+    # Загружаем настройки, прерываем выполнение при ошибке
+    if ! load_settings; then
+        echo "ERROR: Failed to load settings. Check $SETTINGS_FILE" >&2
+        exit 1
+    fi
     
     case "$1" in
         "update")
