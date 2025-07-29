@@ -229,7 +229,7 @@ keenetic_api_request() {
     local max_retries=3
     local retry_delay=2
     local attempt=1
-    local temp_passwFd_file="/opt/tmp/.keenetic_passwd_$$"
+    local temp_passwd_file="/opt/tmp/.keenetic_passwd_$$"
     local response
     local exit_code
     
