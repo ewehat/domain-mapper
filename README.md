@@ -90,4 +90,13 @@ domain-router <команда> [аргументы]
 
 ---
 
+## Changelog
+
+### v1.1 (2025-01-29)
+- **ИСПРАВЛЕНО**: Ошибка API при обращении к Keenetic - обновлен endpoint с `/rci/ip/route` на `/rci/ip/static`
+- **УЛУЧШЕНО**: Добавлены HTTP-заголовки `Accept: application/json` для лучшей совместимости с API
+- **УЛУЧШЕНО**: Расширенное логирование ошибок API с детализацией кодов выхода
+
+---
+
 **Репозиторий:** [ewehat/domain-mapper](https://github.com/ewehat/domain-mapper)
