@@ -1,0 +1,9 @@
+2024-01-15 10:00:00 INFO: Domain Router started
+2024-01-15 10:00:01 INFO: Loading configuration from settings.conf
+2024-01-15 10:00:02 INFO: Processing domain youtube.com
+2024-01-15 10:00:03 INFO: Resolved youtube.com to 142.250.191.142
+2024-01-15 10:00:04 INFO: Added route for 142.250.191.142
+2024-01-15 10:00:05 INFO: Processing domain facebook.com
+2024-01-15 10:00:06 INFO: Resolved facebook.com to 31.13.86.36
+2024-01-15 10:00:07 INFO: Added route for 31.13.86.36
+2024-01-15 10:00:08 INFO: Domain routes update completed. Success: 2, Errors: 0

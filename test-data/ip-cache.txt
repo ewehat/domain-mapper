@@ -1,0 +1,11 @@
+# IP Cache file for Domain Router
+# Format: IP_ADDRESS DOMAIN_LIST
+# Example: 8.8.8.8 google.com,youtube.com
+
+# Sample cache entries for testing
+142.250.191.142 youtube.com,googlevideo.com
+151.101.193.140 reddit.com
+31.13.86.36 facebook.com
+157.240.15.35 instagram.com
+104.244.42.129 twitter.com
+172.217.16.110 drive.google.com

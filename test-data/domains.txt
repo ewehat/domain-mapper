@@ -1,0 +1,34 @@
+# Domain Router - список доменов для маршрутизации
+# Domain Router - list of domains for routing
+# Один домен на строку, строки с # игнорируются
+# One domain per line, lines with # are ignored
+# 
+# Популярные видео-сервисы
+# Popular video services
+youtube.com
+googlevideo.com
+ytimg.com
+
+# Социальные сети
+# Social networks
+facebook.com
+instagram.com
+twitter.com
+
+# Облачные сервисы
+# Cloud services
+drive.google.com
+onedrive.live.com
+dropbox.com
+
+# Стриминговые сервисы
+# Streaming services
+netflix.com
+twitch.tv
+spotify.com
+
+# Примеры тестовых доменов
+# Example test domains
+example.com
+httpbin.org
+jsonplaceholder.typicode.com
