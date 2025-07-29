@@ -136,6 +136,10 @@ update_ip_cache() {
     
     # Создаем кэш файл если не существует
     if [ ! -f "$IP_CACHE_FILE" ]; then
+        # Убеждаемся что директория существует
+        if [ ! -d "$SCRIPT_DIR" ]; then
+            mkdir -p "$SCRIPT_DIR" 2>/dev/null || return 1
+        fi
         touch "$IP_CACHE_FILE"
         chmod 600 "$IP_CACHE_FILE"
     fi
