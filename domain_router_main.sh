@@ -1,0 +1,520 @@
+#!/bin/sh
+# Domain Router для Keenetic
+# Маршрутизация по доменным именам
+
+SCRIPT_DIR="/opt/domain-router"
+DOMAINS_FILE="$SCRIPT_DIR/domains.txt"
+IP_CACHE_FILE="$SCRIPT_DIR/ip-cache.txt"
+SETTINGS_FILE="$SCRIPT_DIR/settings.conf"
+LOG_FILE="$SCRIPT_DIR/domain-router.log"
+
+# Загрузка настроек
+load_settings() {
+    if [ -f "$SETTINGS_FILE" ]; then
+        # Проверяем права доступа к файлу настроек
+        if [ ! -r "$SETTINGS_FILE" ]; then
+            log_message "ERROR: Cannot read settings file: $SETTINGS_FILE"
+            return 1
+        fi
+        
+        # Проверяем, что файл настроек не слишком открыт (должен быть 600 или 640)
+        local perms
+        perms=$(stat -c "%a" "$SETTINGS_FILE" 2>/dev/null || stat -f "%A" "$SETTINGS_FILE" 2>/dev/null)
+        if [ -n "$perms" ] && [ "$perms" -gt 640 ]; then
+            log_message "WARNING: Settings file permissions too open: $perms. Consider chmod 600 $SETTINGS_FILE"
+        fi
+        
+        . "$SETTINGS_FILE"
+    else
+        # Настройки по умолчанию
+        KEENETIC_HOST="192.168.1.1"
+        KEENETIC_USER="admin"
+        KEENETIC_PASS=""
+        VPN_INTERFACE="Wireguard0"
+        DNS_SERVERS="8.8.8.8,1.1.1.1"
+    fi
+    
+    # Проверяем обязательные настройки
+    if [ -z "$KEENETIC_HOST" ] || [ -z "$KEENETIC_USER" ]; then
+        log_message "ERROR: Missing required settings (KEENETIC_HOST or KEENETIC_USER)"
+        return 1
+    fi
+}
+
+# Логирование
+log_message() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$LOG_FILE"
+}
+
+# Резолв домена в IP адреса
+resolve_domain() {
+    local domain="$1"
+    local ips=""
+    
+    # Пробуем разные DNS серверы
+    for dns in $(echo "$DNS_SERVERS" | tr ',' ' '); do
+        ips=$(nslookup "$domain" "$dns" 2>/dev/null | \
+              grep -A10 "Name:" | \
+              grep "Address:" | \
+              awk '{print $2}' | \
+              grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | \
+              sort -u)
+        
+        if [ -n "$ips" ]; then
+            break
+        fi
+    done
+    
+    if [ -z "$ips" ]; then
+        log_message "ERROR: Failed to resolve $domain"
+        return 1
+    fi
+    
+    echo "$ips"
+}
+
+# Получение текущих IP для домена из кэша
+get_cached_ips() {
+    local domain="$1"
+    if [ -f "$IP_CACHE_FILE" ]; then
+        grep "$domain" "$IP_CACHE_FILE" 2>/dev/null | cut -d' ' -f1
+    fi
+}
+
+# Обновление кэша IP
+update_ip_cache() {
+    local ip="$1"
+    local domain="$2"
+    local temp_file="/tmp/ip-cache-temp-$$"
+    
+    # Создаем временный файл с уникальным именем
+    touch "$temp_file"
+    chmod 600 "$temp_file"
+    
+    if [ -f "$IP_CACHE_FILE" ]; then
+        # Удаляем старые записи для этого домена
+        grep -v " $domain\(,\|$\)" "$IP_CACHE_FILE" > "$temp_file" 2>/dev/null || touch "$temp_file"
+        mv "$temp_file" "$IP_CACHE_FILE" 2>/dev/null
+    fi
+    
+    # Добавляем новую запись или обновляем существующую
+    if grep -q "^$ip " "$IP_CACHE_FILE" 2>/dev/null; then
+        # IP уже есть, добавляем домен к списку
+        sed "s/^$ip \(.*\)/$ip \1,$domain/" "$IP_CACHE_FILE" > "$temp_file"
+        mv "$temp_file" "$IP_CACHE_FILE"
+    else
+        # Новый IP
+        echo "$ip $domain" >> "$IP_CACHE_FILE"
+        rm -f "$temp_file"
+    fi
+}
+
+# Удаление домена из кэша
+remove_from_cache() {
+    local domain="$1"
+    local temp_file="/tmp/ip-cache-temp-$$"
+    
+    if [ ! -f "$IP_CACHE_FILE" ]; then
+        return
+    fi
+    
+    touch "$temp_file"
+    chmod 600 "$temp_file"
+    
+    # Удаляем домен из всех записей
+    while IFS=' ' read -r ip domains; do
+        if [ -n "$ip" ] && [ -n "$domains" ]; then
+            # Удаляем домен из списка
+            new_domains=$(echo "$domains" | sed "s/\(,\|^\)$domain\(,\|$\)//g; s/^,//; s/,$//; s/,,/,/g")
+            
+            if [ -n "$new_domains" ] && [ "$new_domains" != "," ]; then
+                echo "$ip $new_domains" >> "$temp_file"
+            fi
+        fi
+    done < "$IP_CACHE_FILE"
+    
+    if [ -f "$temp_file" ] && [ -s "$temp_file" ]; then
+        mv "$temp_file" "$IP_CACHE_FILE"
+    else
+        > "$IP_CACHE_FILE"
+        rm -f "$temp_file"
+    fi
+}
+
+# Получение текущих маршрутов из Keenetic
+get_current_routes() {
+    local response
+    response=$(keenetic_api_request "GET" "/rci/ip/route" "")
+    
+    if [ $? -eq 0 ] && [ -n "$response" ]; then
+        echo "$response" | grep -o '"host":"[^"]*"' | cut -d'"' -f4
+    fi
+}
+
+# Проверка существования маршрута
+route_exists() {
+    local ip="$1"
+    local current_routes
+    current_routes=$(get_current_routes)
+    
+    echo "$current_routes" | grep -q "^$ip$"
+}
+
+# Безопасный HTTP запрос к Keenetic API
+keenetic_api_request() {
+    local method="$1"
+    local endpoint="$2"
+    local data="$3"
+    local temp_passwd_file="/tmp/.keenetic_passwd_$$"
+    local response
+    local exit_code
+    
+    # Создаем временный файл с паролем для безопасности
+    echo "$KEENETIC_PASS" > "$temp_passwd_file"
+    chmod 600 "$temp_passwd_file"
+    
+    case "$method" in
+        "GET")
+            response=$(wget -q --user="$KEENETIC_USER" \
+                           --password="$KEENETIC_PASS" \
+                           -O - \
+                           "http://$KEENETIC_HOST$endpoint" 2>/dev/null)
+            exit_code=$?
+            ;;
+        "POST")
+            response=$(wget -q --post-data="$data" \
+                           --header="Content-Type: application/json" \
+                           --user="$KEENETIC_USER" \
+                           --password="$KEENETIC_PASS" \
+                           -O - \
+                           "http://$KEENETIC_HOST$endpoint" 2>/dev/null)
+            exit_code=$?
+            ;;
+        "DELETE")
+            response=$(wget -q --method=DELETE \
+                           --user="$KEENETIC_USER" \
+                           --password="$KEENETIC_PASS" \
+                           --post-data="$data" \
+                           --header="Content-Type: application/json" \
+                           -O - \
+                           "http://$KEENETIC_HOST$endpoint" 2>/dev/null)
+            exit_code=$?
+            ;;
+    esac
+    
+    # Удаляем временный файл
+    rm -f "$temp_passwd_file"
+    
+    # Проверяем HTTP статус в ответе
+    if [ $exit_code -eq 0 ] && [ -n "$response" ]; then
+        # Простая проверка на наличие ошибок в JSON ответе
+        if echo "$response" | grep -q '"error"'; then
+            log_message "ERROR: API returned error: $response"
+            return 1
+        fi
+        echo "$response"
+        return 0
+    else
+        return $exit_code
+    fi
+}
+
+# Добавление маршрута через API Keenetic
+add_route() {
+    local ip="$1"
+    local response
+    
+    # Проверяем, не существует ли уже маршрут
+    if route_exists "$ip"; then
+        log_message "INFO: Route for $ip already exists"
+        return 0
+    fi
+    
+    # Формируем JSON для API
+    local json_data="{\"host\":\"$ip\",\"interface\":\"$VPN_INTERFACE\"}"
+    
+    response=$(keenetic_api_request "POST" "/rci/ip/route" "$json_data")
+    
+    if [ $? -eq 0 ]; then
+        log_message "INFO: Added route for $ip"
+        return 0
+    else
+        log_message "ERROR: Failed to add route for $ip"
+        return 1
+    fi
+}
+
+# Удаление маршрута через API Keenetic
+remove_route() {
+    local ip="$1"
+    local response
+    
+    # Проверяем, существует ли маршрут
+    if ! route_exists "$ip"; then
+        log_message "INFO: Route for $ip does not exist"
+        return 0
+    fi
+    
+    local json_data="{\"host\":\"$ip\"}"
+    response=$(keenetic_api_request "DELETE" "/rci/ip/route" "$json_data")
+    
+    if [ $? -eq 0 ]; then
+        log_message "INFO: Removed route for $ip"
+        return 0
+    else
+        log_message "ERROR: Failed to remove route for $ip"
+        return 1
+    fi
+}
+
+# Обновление маршрутов для домена
+update_domain_routes() {
+    local domain="$1"
+    local force_update="$2"
+    
+    log_message "INFO: Processing domain $domain"
+    
+    # Получаем текущие IP
+    local new_ips
+    new_ips=$(resolve_domain "$domain")
+    
+    if [ -z "$new_ips" ]; then
+        return 1
+    fi
+    
+    # Получаем старые IP из кэша
+    local old_ips
+    old_ips=$(get_cached_ips "$domain")
+    
+    # Обрабатываем новые IP
+    for ip in $new_ips; do
+        if [ "$force_update" = "1" ] || ! echo "$old_ips" | grep -q "$ip"; then
+            update_ip_cache "$ip" "$domain"
+            add_route "$ip"
+        fi
+    done
+    
+    # Удаляем старые IP, которых больше нет
+    if [ -n "$old_ips" ]; then
+        for ip in $old_ips; do
+            if ! echo "$new_ips" | grep -q "$ip"; then
+                # Проверяем, используется ли IP другими доменами
+                local other_domains
+                other_domains=$(grep "^$ip " "$IP_CACHE_FILE" 2>/dev/null | cut -d' ' -f2- | sed "s/\b$domain\b//g; s/,,*/,/g; s/^,*//; s/,*$//")
+                
+                if [ -z "$other_domains" ] || [ "$other_domains" = "," ]; then
+                    remove_route "$ip"
+                fi
+                
+                # Удаляем домен из кэша
+                remove_from_cache "$domain"
+            fi
+        done
+    fi
+}
+
+# Основная функция обновления всех доменов
+update_all_domains() {
+    local force_update="$1"
+    
+    if [ ! -f "$DOMAINS_FILE" ]; then
+        log_message "ERROR: Domains file not found: $DOMAINS_FILE"
+        return 1
+    fi
+    
+    log_message "INFO: Starting domain routes update"
+    
+    while IFS= read -r domain; do
+        # Пропускаем пустые строки и комментарии
+        case "$domain" in
+            ""|\#*) continue ;;
+        esac
+        
+        update_domain_routes "$domain" "$force_update"
+    done < "$DOMAINS_FILE"
+    
+    log_message "INFO: Domain routes update completed"
+}
+
+# Валидация доменного имени
+validate_domain() {
+    local domain="$1"
+    
+    # Проверка на пустоту
+    if [ -z "$domain" ]; then
+        return 1
+    fi
+    
+    # Проверка длины домена (до 253 символов)
+    if [ ${#domain} -gt 253 ]; then
+        return 1
+    fi
+    
+    # Проверка базового формата домена
+    echo "$domain" | grep -qE '^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$|^[a-zA-Z0-9]$'
+}
+
+# Добавление нового домена
+add_domain() {
+    local domain="$1"
+    
+    if [ -z "$domain" ]; then
+        echo "Usage: $0 add <domain>"
+        return 1
+    fi
+    
+    # Валидация домена
+    if ! validate_domain "$domain"; then
+        echo "ERROR: Invalid domain name: $domain"
+        return 1
+    fi
+    
+    # Проверяем, не добавлен ли уже домен
+    if [ -f "$DOMAINS_FILE" ] && grep -q "^$domain$" "$DOMAINS_FILE"; then
+        echo "Domain $domain already exists"
+        return 1
+    fi
+    
+    # Добавляем домен
+    echo "$domain" >> "$DOMAINS_FILE"
+    echo "Domain $domain added"
+    
+    # Сразу обновляем маршруты для этого домена
+    update_domain_routes "$domain" "1"
+}
+
+# Удаление домена
+remove_domain() {
+    local domain="$1"
+    
+    if [ -z "$domain" ]; then
+        echo "Usage: $0 remove <domain>"
+        return 1
+    fi
+    
+    if [ ! -f "$DOMAINS_FILE" ]; then
+        echo "Domains file not found"
+        return 1
+    fi
+    
+    # Удаляем домен из файла
+    local temp_domains="/tmp/domains-temp-$$"
+    grep -v "^$domain$" "$DOMAINS_FILE" > "$temp_domains"
+    mv "$temp_domains" "$DOMAINS_FILE"
+    
+    # Удаляем из кэша и маршрутов
+    remove_from_cache "$domain"
+    
+    # Проверяем и удаляем неиспользуемые маршруты
+    if [ -f "$IP_CACHE_FILE" ]; then
+        while IFS=' ' read -r ip domains; do
+            if [ -n "$ip" ] && [ -z "$domains" ]; then
+                remove_route "$ip"
+            fi
+        done < "$IP_CACHE_FILE"
+    fi
+    
+    echo "Domain $domain removed"
+    log_message "INFO: Domain $domain removed"
+}
+
+# Очистка неиспользуемых маршрутов
+cleanup_unused_routes() {
+    log_message "INFO: Starting cleanup of unused routes"
+    
+    if [ ! -f "$IP_CACHE_FILE" ]; then
+        return
+    fi
+    
+    # Получаем все IP из кэша
+    local cached_ips
+    cached_ips=$(cut -d' ' -f1 "$IP_CACHE_FILE" | sort -u)
+    
+    # Получаем текущие маршруты из роутера
+    local current_routes
+    current_routes=$(get_current_routes)
+    
+    # Удаляем маршруты, которых нет в кэше
+    for route_ip in $current_routes; do
+        if ! echo "$cached_ips" | grep -q "^$route_ip$"; then
+            log_message "INFO: Removing unused route $route_ip"
+            remove_route "$route_ip"
+        fi
+    done
+}
+
+# Показать статус системы
+show_status() {
+    echo "=== Domain Router Status ==="
+    echo
+    
+    if [ -f "$DOMAINS_FILE" ]; then
+        echo "Configured domains:"
+        cat "$DOMAINS_FILE" | grep -v "^#" | grep -v "^$"
+    else
+        echo "No domains configured"
+    fi
+    
+    echo
+    if [ -f "$IP_CACHE_FILE" ]; then
+        echo "Cached IP mappings:"
+        while IFS=' ' read -r ip domains; do
+            if [ -n "$ip" ] && [ -n "$domains" ]; then
+                echo "  $ip -> $domains"
+            fi
+        done < "$IP_CACHE_FILE"
+    else
+        echo "No cached mappings"
+    fi
+    
+    echo
+    echo "Current routes in Keenetic:"
+    local current_routes
+    current_routes=$(get_current_routes)
+    if [ -n "$current_routes" ]; then
+        for route_ip in $current_routes; do
+            echo "  $route_ip -> $VPN_INTERFACE"
+        done
+    else
+        echo "  No active routes"
+    fi
+}
+
+# Основная логика
+main() {
+    load_settings
+    
+    case "$1" in
+        "update")
+            update_all_domains "$2"
+            ;;
+        "add")
+            add_domain "$2"
+            ;;
+        "remove")
+            remove_domain "$2"
+            ;;
+        "status")
+            show_status
+            ;;
+        "force-update")
+            update_all_domains "1"
+            ;;
+        "cleanup")
+            cleanup_unused_routes
+            ;;
+        *)
+            echo "Usage: $0 {update|add|remove|status|force-update|cleanup} [domain]"
+            echo "Commands:"
+            echo "  update          - Update routes for all domains"
+            echo "  add <domain>    - Add new domain"
+            echo "  remove <domain> - Remove domain"
+            echo "  status          - Show current status"
+            echo "  force-update    - Force update all routes"
+            echo "  cleanup         - Remove unused routes"
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
