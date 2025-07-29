@@ -221,11 +221,14 @@ route_exists() {
     echo "$current_routes" | grep -q "^$ip$"
 }
 
-# Безопасный HTTP запрос к Keenetic API
+# Безопасный HTTP запрос к Keenetic API с повторными попытками
 keenetic_api_request() {
     local method="$1"
-    local endpoint="$2"
+    local endpoint="$2" 
     local data="$3"
+    local max_retries=3
+    local retry_delay=2
+    local attempt=1
     local temp_passwd_file="/tmp/.keenetic_passwd_$$"
     local response
     local exit_code
@@ -234,50 +237,69 @@ keenetic_api_request() {
     echo "$KEENETIC_PASS" > "$temp_passwd_file"
     chmod 600 "$temp_passwd_file"
     
-    case "$method" in
-        "GET")
-            response=$(wget -q --user="$KEENETIC_USER" \
-                           --password-file="$temp_passwd_file" \
-                           -O - \
-                           "http://$KEENETIC_HOST$endpoint" 2>/dev/null)
-            exit_code=$?
-            ;;
-        "POST")
-            response=$(wget -q --post-data="$data" \
-                           --header="Content-Type: application/json" \
-                           --user="$KEENETIC_USER" \
-                           --password-file="$temp_passwd_file" \
-                           -O - \
-                           "http://$KEENETIC_HOST$endpoint" 2>/dev/null)
-            exit_code=$?
-            ;;
-        "DELETE")
-            response=$(wget -q --method=DELETE \
-                           --user="$KEENETIC_USER" \
-                           --password-file="$temp_passwd_file" \
-                           --post-data="$data" \
-                           --header="Content-Type: application/json" \
-                           -O - \
-                           "http://$KEENETIC_HOST$endpoint" 2>/dev/null)
-            exit_code=$?
-            ;;
-    esac
+    while [ $attempt -le $max_retries ]; do
+        case "$method" in
+            "GET")
+                response=$(wget -q --user="$KEENETIC_USER" \
+                               --password-file="$temp_passwd_file" \
+                               --timeout=10 \
+                               -O - \
+                               "http://$KEENETIC_HOST$endpoint" 2>/dev/null)
+                exit_code=$?
+                ;;
+            "POST")
+                response=$(wget -q --post-data="$data" \
+                               --header="Content-Type: application/json" \
+                               --user="$KEENETIC_USER" \
+                               --password-file="$temp_passwd_file" \
+                               --timeout=10 \
+                               -O - \
+                               "http://$KEENETIC_HOST$endpoint" 2>/dev/null)
+                exit_code=$?
+                ;;
+            "DELETE")
+                response=$(wget -q --method=DELETE \
+                               --user="$KEENETIC_USER" \
+                               --password-file="$temp_passwd_file" \
+                               --post-data="$data" \
+                               --header="Content-Type: application/json" \
+                               --timeout=10 \
+                               -O - \
+                               "http://$KEENETIC_HOST$endpoint" 2>/dev/null)
+                exit_code=$?
+                ;;
+        esac
+        
+        # Проверяем HTTP статус в ответе
+        if [ $exit_code -eq 0 ] && [ -n "$response" ]; then
+            # Простая проверка на наличие ошибок в JSON ответе
+            if echo "$response" | grep -q '"error"'; then
+                log_message "ERROR: API returned error: $response"
+                rm -f "$temp_passwd_file"
+                return 1
+            fi
+            
+            # Удаляем временный файл
+            rm -f "$temp_passwd_file"
+            echo "$response"
+            return 0
+        fi
+        
+        log_message "WARNING: API request failed (attempt $attempt/$max_retries): $method $endpoint"
+        
+        if [ $attempt -lt $max_retries ]; then
+            sleep $retry_delay
+            retry_delay=$((retry_delay * 2))  # Exponential backoff
+        fi
+        
+        attempt=$((attempt + 1))
+    done
     
     # Удаляем временный файл
     rm -f "$temp_passwd_file"
     
-    # Проверяем HTTP статус в ответе
-    if [ $exit_code -eq 0 ] && [ -n "$response" ]; then
-        # Простая проверка на наличие ошибок в JSON ответе
-        if echo "$response" | grep -q '"error"'; then
-            log_message "ERROR: API returned error: $response"
-            return 1
-        fi
-        echo "$response"
-        return 0
-    else
-        return $exit_code
-    fi
+    log_message "ERROR: API request failed after $max_retries attempts: $method $endpoint"
+    return $exit_code
 }
 
 # Добавление маршрута через API Keenetic
@@ -377,13 +399,27 @@ update_domain_routes() {
 # Основная функция обновления всех доменов
 update_all_domains() {
     local force_update="$1"
+    local domains_count=0
+    local success_count=0
+    local error_count=0
     
     if [ ! -f "$DOMAINS_FILE" ]; then
         log_message "ERROR: Domains file not found: $DOMAINS_FILE"
+        echo "ERROR: Domains file not found: $DOMAINS_FILE" >&2
         return 1
     fi
     
-    log_message "INFO: Starting domain routes update"
+    # Подсчитываем количество доменов
+    domains_count=$(grep -v "^#" "$DOMAINS_FILE" | grep -v "^$" | wc -l)
+    
+    if [ "$domains_count" -eq 0 ]; then
+        log_message "INFO: No domains configured"
+        echo "No domains configured"
+        return 0
+    fi
+    
+    log_message "INFO: Starting domain routes update for $domains_count domains"
+    echo "Processing $domains_count domains..."
     
     while IFS= read -r domain; do
         # Пропускаем пустые строки и комментарии
@@ -391,13 +427,77 @@ update_all_domains() {
             ""|\#*) continue ;;
         esac
         
-        update_domain_routes "$domain" "$force_update"
+        echo "Processing: $domain"
+        if update_domain_routes "$domain" "$force_update"; then
+            success_count=$((success_count + 1))
+        else
+            error_count=$((error_count + 1))
+        fi
     done < "$DOMAINS_FILE"
     
-    log_message "INFO: Domain routes update completed"
+    log_message "INFO: Domain routes update completed. Success: $success_count, Errors: $error_count"
+    echo "Update completed. Success: $success_count, Errors: $error_count"
+    
+    if [ "$error_count" -gt 0 ]; then
+        return 1
+    fi
 }
 
-# Валидация доменного имени
+# Валидация конфигурации
+validate_configuration() {
+    local errors=0
+    
+    # Проверяем обязательные настройки
+    if [ -z "$KEENETIC_HOST" ]; then
+        log_message "ERROR: KEENETIC_HOST not set"
+        echo "ERROR: KEENETIC_HOST not set" >&2
+        errors=$((errors + 1))
+    fi
+    
+    if [ -z "$KEENETIC_USER" ]; then
+        log_message "ERROR: KEENETIC_USER not set"
+        echo "ERROR: KEENETIC_USER not set" >&2
+        errors=$((errors + 1))
+    fi
+    
+    if [ -z "$KEENETIC_PASS" ]; then
+        log_message "WARNING: KEENETIC_PASS is empty"
+        echo "WARNING: KEENETIC_PASS is empty" >&2
+    fi
+    
+    if [ -z "$VPN_INTERFACE" ]; then
+        log_message "ERROR: VPN_INTERFACE not set"
+        echo "ERROR: VPN_INTERFACE not set" >&2
+        errors=$((errors + 1))
+    fi
+    
+    if [ -z "$DNS_SERVERS" ]; then
+        log_message "WARNING: DNS_SERVERS not set, using default"
+        DNS_SERVERS="8.8.8.8,1.1.1.1"
+    fi
+    
+    # Проверяем доступность необходимых команд
+    if ! command -v wget >/dev/null 2>&1; then
+        log_message "ERROR: wget command not found"
+        echo "ERROR: wget command not found" >&2
+        errors=$((errors + 1))
+    fi
+    
+    if ! command -v nslookup >/dev/null 2>&1 && ! command -v dig >/dev/null 2>&1; then
+        log_message "ERROR: Neither nslookup nor dig found"
+        echo "ERROR: Neither nslookup nor dig found" >&2
+        errors=$((errors + 1))
+    fi
+    
+    # Проверяем доступность директорий
+    if [ ! -d "$SCRIPT_DIR" ]; then
+        log_message "ERROR: Script directory not found: $SCRIPT_DIR"
+        echo "ERROR: Script directory not found: $SCRIPT_DIR" >&2
+        errors=$((errors + 1))
+    fi
+    
+    return $errors
+}
 validate_domain() {
     local domain="$1"
     
@@ -411,8 +511,8 @@ validate_domain() {
         return 1
     fi
     
-    # Проверка на минимальную длину
-    if [ ${#domain} -lt 1 ]; then
+    # Проверка на минимальную длину (домен должен содержать хотя бы одну точку для FQDN)
+    if [ ${#domain} -lt 3 ]; then
         return 1
     fi
     
@@ -423,7 +523,8 @@ validate_domain() {
     esac
     
     # Проверка на допустимые символы и структуру
-    echo "$domain" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$'
+    # Домен должен содержать хотя бы одну точку и состоять из допустимых символов
+    echo "$domain" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$'
 }
 
 # Добавление нового домена
@@ -560,6 +661,16 @@ main() {
         exit 1
     fi
     
+    # Проверяем конфигурацию только для команд, которые требуют доступа к API
+    case "$1" in
+        "update"|"add"|"remove"|"force-update"|"cleanup"|"test-config")
+            if ! validate_configuration; then
+                echo "ERROR: Configuration validation failed" >&2
+                exit 1
+            fi
+            ;;
+    esac
+    
     case "$1" in
         "update")
             update_all_domains "$2"
@@ -579,8 +690,25 @@ main() {
         "cleanup")
             cleanup_unused_routes
             ;;
+        "test-config")
+            echo "Testing configuration..."
+            if validate_configuration; then
+                echo "✓ Configuration is valid"
+                # Test API connectivity
+                echo "Testing API connectivity..."
+                if keenetic_api_request "GET" "/rci/system" "" >/dev/null; then
+                    echo "✓ API connection successful"
+                else
+                    echo "✗ API connection failed"
+                    exit 1
+                fi
+            else
+                echo "✗ Configuration validation failed"
+                exit 1
+            fi
+            ;;
         *)
-            echo "Usage: $0 {update|add|remove|status|force-update|cleanup} [domain]"
+            echo "Usage: $0 {update|add|remove|status|force-update|cleanup|test-config} [domain]"
             echo "Commands:"
             echo "  update          - Update routes for all domains"
             echo "  add <domain>    - Add new domain"
@@ -588,6 +716,7 @@ main() {
             echo "  status          - Show current status"
             echo "  force-update    - Force update all routes"
             echo "  cleanup         - Remove unused routes"
+            echo "  test-config     - Test configuration and API connectivity"
             exit 1
             ;;
     esac

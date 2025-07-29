@@ -129,6 +129,7 @@ echo "  domain-router status           - Show status"
 echo "  domain-router update           - Manual update"
 echo "  domain-router force-update     - Force full update"
 echo "  domain-router cleanup          - Remove unused routes"
+echo "  domain-router test-config      - Test configuration"
 echo
 
 # ===== uninstall.sh =====
