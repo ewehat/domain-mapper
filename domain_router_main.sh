@@ -205,7 +205,7 @@ remove_from_cache() {
 # Получение текущих маршрутов из Keenetic
 get_current_routes() {
     local response
-    response=$(keenetic_api_request "GET" "/rci/ip/route" "")
+    response=$(keenetic_api_request "GET" "/rci/ip/static" "")
     
     if [ $? -eq 0 ] && [ -n "$response" ]; then
         echo "$response" | grep -o '"host":"[^"]*"' | cut -d'"' -f4
@@ -242,6 +242,7 @@ keenetic_api_request() {
             "GET")
                 response=$(wget -q --user="$KEENETIC_USER" \
                                --password-file="$temp_passwd_file" \
+                               --header="Accept: application/json" \
                                --timeout=10 \
                                -O - \
                                "http://$KEENETIC_HOST$endpoint" 2>/dev/null)
@@ -250,6 +251,7 @@ keenetic_api_request() {
             "POST")
                 response=$(wget -q --post-data="$data" \
                                --header="Content-Type: application/json" \
+                               --header="Accept: application/json" \
                                --user="$KEENETIC_USER" \
                                --password-file="$temp_passwd_file" \
                                --timeout=10 \
@@ -263,6 +265,7 @@ keenetic_api_request() {
                                --password-file="$temp_passwd_file" \
                                --post-data="$data" \
                                --header="Content-Type: application/json" \
+                               --header="Accept: application/json" \
                                --timeout=10 \
                                -O - \
                                "http://$KEENETIC_HOST$endpoint" 2>/dev/null)
@@ -274,7 +277,7 @@ keenetic_api_request() {
         if [ $exit_code -eq 0 ] && [ -n "$response" ]; then
             # Простая проверка на наличие ошибок в JSON ответе
             if echo "$response" | grep -q '"error"'; then
-                log_message "ERROR: API returned error: $response"
+                log_message "ERROR: API returned error response: $response"
                 rm -f "$temp_passwd_file"
                 return 1
             fi
@@ -285,7 +288,12 @@ keenetic_api_request() {
             return 0
         fi
         
-        log_message "WARNING: API request failed (attempt $attempt/$max_retries): $method $endpoint"
+        # Улучшенное логирование ошибок
+        if [ $exit_code -ne 0 ]; then
+            log_message "WARNING: API request failed (attempt $attempt/$max_retries): $method $endpoint (wget exit code: $exit_code)"
+        else
+            log_message "WARNING: API request failed (attempt $attempt/$max_retries): $method $endpoint (empty response)"
+        fi
         
         if [ $attempt -lt $max_retries ]; then
             sleep $retry_delay
@@ -316,7 +324,7 @@ add_route() {
     # Формируем JSON для API
     local json_data="{\"host\":\"$ip\",\"interface\":\"$VPN_INTERFACE\"}"
     
-    response=$(keenetic_api_request "POST" "/rci/ip/route" "$json_data")
+    response=$(keenetic_api_request "POST" "/rci/ip/static" "$json_data")
     
     if [ $? -eq 0 ]; then
         log_message "INFO: Added route for $ip"
@@ -339,7 +347,7 @@ remove_route() {
     fi
     
     local json_data="{\"host\":\"$ip\"}"
-    response=$(keenetic_api_request "DELETE" "/rci/ip/route" "$json_data")
+    response=$(keenetic_api_request "DELETE" "/rci/ip/static" "$json_data")
     
     if [ $? -eq 0 ]; then
         log_message "INFO: Removed route for $ip"
