@@ -2,7 +2,7 @@
 # ===== install.sh =====
 # Установочный скрипт Domain Router
 
-INSTALL_DIR="/opt/domain-router"
+INSTALL_DIR="/opt/etc/domain-router"
 CRON_FILE="/opt/etc/crontab"
 
 echo "Installing Domain Router..."
@@ -67,7 +67,7 @@ touch "$INSTALL_DIR/domain-router.log"
 # Добавляем задачу в cron (ежедневное обновление в 6:00)
 if [ -f "$CRON_FILE" ]; then
     # Создаем временный файл с безопасным именем
-    temp_cron="/tmp/crontab.tmp.$$"
+    temp_cron="/opt/tmp/crontab.tmp.$$"
     
     # Удаляем старые задачи domain-router если есть
     if grep -q "domain-router" "$CRON_FILE"; then
@@ -139,14 +139,14 @@ cat > "$INSTALL_DIR/uninstall.sh" << 'EOF'
 #!/bin/sh
 # Удаление Domain Router
 
-INSTALL_DIR="/opt/domain-router"
+INSTALL_DIR="/opt/etc/domain-router"
 CRON_FILE="/opt/etc/crontab"
 
 echo "Uninstalling Domain Router..."
 
 # Удаляем из cron
 if [ -f "$CRON_FILE" ]; then
-    temp_cron="/tmp/crontab.tmp.$$"
+    temp_cron="/opt/tmp/crontab.tmp.$$"
     
     if grep -q "domain-router" "$CRON_FILE"; then
         grep -v "domain-router" "$CRON_FILE" > "$temp_cron"

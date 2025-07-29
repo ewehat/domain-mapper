@@ -29,12 +29,12 @@
    sh domain_router_config.sh
    ```
    Скрипт:
-   - Скопирует основной файл `domain_router_main.sh` как `/opt/domain-router/domain-router.sh`
+   - Скопирует основной файл `domain_router_main.sh` как `/opt/etc/domain-router/domain-router.sh`
    - Создаст конфиг, кэш, лог.
    - Добавит ежедневную задачу в cron.
    - Создаст удобную symlink-команду `/opt/bin/domain-router`
 
-4. Отредактируйте параметры в `/opt/domain-router/settings.conf` (доступ к Keenetic API и список DNS серверов).
+4. Отредактируйте параметры в `/opt/etc/domain-router/settings.conf` (доступ к Keenetic API и список DNS серверов).
 
 5. Протестируйте конфигурацию:
    ```sh
@@ -77,14 +77,14 @@ domain-router <команда> [аргументы]
 - Скрипт автоматически добавляет запуск обновления маршрутов в cron: ежедневно в 6:00 утра.
 - Для ручного удаления всех маршрутов и/или полного удаления скрипта используйте:
   ```sh
-  /opt/domain-router/uninstall.sh
+  /opt/etc/domain-router/uninstall.sh
   ```
 
 ## Удаление
 
 Выполните:
 ```sh
-/opt/domain-router/uninstall.sh
+/opt/etc/domain-router/uninstall.sh
 ```
 Скрипт удалит все связанные cron-задачи, файлы и/или только скрипт с сохранением конфигов (по выбору).
 

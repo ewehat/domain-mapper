@@ -2,7 +2,7 @@
 # Domain Router для Keenetic
 # Маршрутизация по доменным именам
 
-SCRIPT_DIR="/opt/domain-router"
+SCRIPT_DIR="/opt/etc/domain-router"
 DOMAINS_FILE="$SCRIPT_DIR/domains.txt"
 IP_CACHE_FILE="$SCRIPT_DIR/ip-cache.txt"
 SETTINGS_FILE="$SCRIPT_DIR/settings.conf"
@@ -112,7 +112,7 @@ get_cached_ips() {
 update_ip_cache() {
     local ip="$1"
     local domain="$2"
-    local temp_file="/tmp/ip-cache-temp-$$"
+    local temp_file="/opt/tmp/ip-cache-temp-$$"
     
     # Валидация входных параметров
     if [ -z "$ip" ] || [ -z "$domain" ]; then
@@ -162,7 +162,7 @@ update_ip_cache() {
 # Удаление домена из кэша
 remove_from_cache() {
     local domain="$1"
-    local temp_file="/tmp/ip-cache-temp-$$"
+    local temp_file="/opt/tmp/ip-cache-temp-$$"
     
     if [ ! -f "$IP_CACHE_FILE" ]; then
         return 0
@@ -229,7 +229,7 @@ keenetic_api_request() {
     local max_retries=3
     local retry_delay=2
     local attempt=1
-    local temp_passwd_file="/tmp/.keenetic_passwd_$$"
+    local temp_passwFd_file="/opt/tmp/.keenetic_passwd_$$"
     local response
     local exit_code
     
@@ -571,7 +571,7 @@ remove_domain() {
     fi
     
     # Удаляем домен из файла
-    local temp_domains="/tmp/domains-temp-$$"
+    local temp_domains="/opt/tmp/domains-temp-$$"
     grep -v "^$domain$" "$DOMAINS_FILE" > "$temp_domains"
     mv "$temp_domains" "$DOMAINS_FILE"
     
