@@ -93,7 +93,7 @@ For better organization with 1000+ domains, create multiple files in `/opt/etc/u
 Edit `/opt/etc/init.d/S56routing` and change the `VPN_INTERFACE` variable to match your VPN interface:
 
 ```bash
-VPN_INTERFACE="wg0"  # Change to your VPN interface (e.g., wg0, tun0, etc.)
+VPN_INTERFACE="nwg0"  # Change to your VPN interface (e.g., nwg0, tun0, etc.)
 ```
 
 ## Troubleshooting
