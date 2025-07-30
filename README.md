@@ -162,6 +162,51 @@ RESOLVED_IPS_FILE="/tmp/resolved_ips.list"
 
 Don't forget to update the reference in `dnsmasq.conf` as well.
 
+## Uninstallation
+
+To uninstall the domain routing system while preserving your domain configurations:
+
+```bash
+wget -O /tmp/uninstall.sh https://raw.githubusercontent.com/yourusername/keenetic-domain-routing/master/uninstall.sh
+chmod +x /tmp/uninstall.sh
+sh /tmp/uninstall.sh
+```
+
+The uninstall script will:
+- Remove all system components (init scripts, cron jobs, routing rules)
+- Clean up temporary files and logs
+- **Preserve your domain configurations** in `/opt/etc/unblock.d/`
+- Backup modified configuration files
+
+### Manual Uninstallation
+
+If you need to manually uninstall:
+
+1. Stop services:
+```bash
+/opt/etc/init.d/S56routing stop
+/opt/etc/init.d/S10dnsmasq stop
+```
+
+2. Remove network rules:
+```bash
+iptables -t mangle -D PREROUTING -m set --match-set unblock dst -j MARK --set-mark 0x1
+ip rule del fwmark 0x1 table 100
+ipset destroy unblock
+```
+
+3. Remove cron job:
+```bash
+crontab -e  # Remove the line with /opt/bin/update_ips.sh
+```
+
+4. Remove files (preserve `/opt/etc/unblock.d/` for your domain lists):
+```bash
+rm -f /opt/etc/init.d/S56routing
+rm -f /opt/bin/update_ips.sh
+rm -f /opt/etc/dnsmasq.conf  # Only if using default config
+```
+
 ## Support
 
 For issues, please check the logs at:
