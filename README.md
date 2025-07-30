@@ -1,93 +1,169 @@
-# Domain Router для Keenetic + Entware
+# Keenetic Domain Routing
 
-**Domain Router** — набор shell-скриптов для автоматического управления маршрутизацией по доменным именам на роутерах Keenetic с установленным Entware.
+A minimalist script for Keenetic routers with Entware that implements selective routing of traffic for 1000+ domains through a VPN connection, similar to KVAS but simpler.
 
-## Возможности
+## Features
 
-- Автоматически разрешает (резолвит) доменные имена в IP-адреса.
-- Добавляет статические маршруты в Keenetic через его API.
-- Обновляет маршруты раз в день (через cron).
-- Кэширует соответствия доменов и IP.
-- Логирует все действия.
-- Позволяет добавлять/удалять домены и чистить устаревшие маршруты.
-- Безопасная обработка паролей (не отображаются в списке процессов).
-- Автоматические повторные попытки при ошибках API.
-- Валидация конфигурации и проверка соединения.
+- Uses dnsmasq to resolve domains and auto-populate an ipset
+- Stores resolved IPs in a file for debugging
+- Clears the ipset hourly to manage size
+- Routes traffic from the ipset through VPN using iptables
+- Supports subdomains and can scale to 1000+ domains
+- Minimizes router load
 
-## Требования
+## Requirements
 
-- Роутер Keenetic с Entware.
-- Доступ к консоли роутера и root-права.
-- Настроенный доступ к API Keenetic (пользователь и пароль).
+- Keenetic router with KeeneticOS 3.7+ or 4.1.7
+- Entware installed on USB storage or internal memory
+- Required packages: dnsmasq-full, ipset, iptables, bind-dig, cron
+- VPN connection (WireGuard or other) already configured
 
-## Установка
+## Installation
 
-1. Установите [Entware](https://github.com/Entware/Entware) на роутер Keenetic (если еще не установлен).
-2. Клонируйте репозиторий на роутер или скачайте архив с файлами.
-3. Запустите установочный скрипт:
-   ```sh
-   sh domain_router_config.sh
-   ```
-   Скрипт:
-   - Скопирует основной файл `domain_router_main.sh` как `/opt/etc/domain-router/domain-router.sh`
-   - Создаст конфиг, кэш, лог.
-   - Добавит ежедневную задачу в cron.
-   - Создаст удобную symlink-команду `/opt/bin/domain-router`
+1. Make sure Entware is installed on your router
+2. Download and run the installation script:
 
-4. Отредактируйте параметры в `/opt/etc/domain-router/settings.conf` (доступ к Keenetic API и список DNS серверов).
-
-5. Протестируйте конфигурацию:
-   ```sh
-   domain-router test-config
-   ```
-
-## Основные команды
-
-Выполняются как:
-```sh
-domain-router <команда> [аргументы]
+```bash
+wget -O /tmp/install.sh https://raw.githubusercontent.com/yourusername/keenetic-domain-routing/master/install.sh
+chmod +x /tmp/install.sh
+sh /tmp/install.sh
 ```
 
-- `add <domain>` — добавить домен.
-- `remove <domain>` — удалить домен.
-- `update` — обновить маршруты для всех доменов.
-- `force-update` — принудительно обновить маршруты (игнорирует кэш).
-- `status` — показать статус, список доменов, кэш, активные маршруты.
-- `cleanup` — удалить неиспользуемые маршруты.
-- `test-config` — проверить конфигурацию и соединение с API роутера.
+Alternatively, you can manually install each component following the steps below.
 
-## Пример эксплуатации
+### Manual Installation
 
-1. Добавьте нужные домены:
-   ```sh
-   domain-router add example.com
-   domain-router add another-site.org
-   ```
-2. Проверьте статус:
-   ```sh
-   domain-router status
-   ```
-3. (Опционально) Запустите обновление вручную:
-   ```sh
-   domain-router update
-   ```
+1. Install required packages:
 
-## Автоматизация
-
-- Скрипт автоматически добавляет запуск обновления маршрутов в cron: ежедневно в 6:00 утра.
-- Для ручного удаления всех маршрутов и/или полного удаления скрипта используйте:
-  ```sh
-  /opt/etc/domain-router/uninstall.sh
-  ```
-
-## Удаление
-
-Выполните:
-```sh
-/opt/etc/domain-router/uninstall.sh
+```bash
+opkg update
+opkg install dnsmasq-full ipset iptables bind-dig cron
 ```
-Скрипт удалит все связанные cron-задачи, файлы и/или только скрипт с сохранением конфигов (по выбору).
 
----
+2. Create required directories:
 
-**Репозиторий:** [ewehat/domain-mapper](https://github.com/ewehat/domain-mapper)
+```bash
+mkdir -p /opt/etc/unblock.d
+mkdir -p /opt/var/log
+```
+
+3. Create configuration files:
+   - Put `dnsmasq.conf` in `/opt/etc/`
+   - Put `unblock.conf` in `/opt/etc/unblock.d/`
+   - Put `update_ips.sh` in `/opt/bin/` and make it executable: `chmod +x /opt/bin/update_ips.sh`
+   - Put `S56routing` in `/opt/etc/init.d/` and make it executable: `chmod +x /opt/etc/init.d/S56routing`
+
+4. Set up cron job for hourly ipset clearing:
+
+```bash
+(crontab -l 2>/dev/null; echo "0 * * * * /opt/bin/update_ips.sh") | crontab -
+```
+
+5. Disable built-in DNS resolver on Keenetic:
+
+```bash
+opkg dns-override
+```
+
+6. Start services:
+
+```bash
+/opt/etc/init.d/S56routing start
+/opt/etc/init.d/S10dnsmasq restart
+```
+
+## Configuration
+
+### Adding Domains
+
+Edit `/opt/etc/unblock.d/unblock.conf` to add domains that should be routed through VPN:
+
+```
+# Format for exact domains:
+ipset=/domain.com/unblock
+
+# Format for domain and all subdomains:
+ipset=/.domain.com/unblock
+```
+
+For better organization with 1000+ domains, create multiple files in `/opt/etc/unblock.d/` (e.g., social.conf, streaming.conf).
+
+### Changing VPN Interface
+
+Edit `/opt/etc/init.d/S56routing` and change the `VPN_INTERFACE` variable to match your VPN interface:
+
+```bash
+VPN_INTERFACE="wg0"  # Change to your VPN interface (e.g., wg0, tun0, etc.)
+```
+
+## Troubleshooting
+
+### Check dnsmasq logs:
+
+```bash
+cat /opt/var/log/dnsmasq.log
+```
+
+### Check update script logs:
+
+```bash
+cat /opt/var/log/update_ips.log
+```
+
+### View current ipset entries:
+
+```bash
+ipset list unblock
+```
+
+### Check resolved IP addresses:
+
+```bash
+cat /opt/etc/resolved_ips.list
+```
+
+### Test domain resolution:
+
+```bash
+dig example.com @192.168.1.1
+```
+
+### Restart services:
+
+```bash
+/opt/etc/init.d/S10dnsmasq restart
+/opt/etc/init.d/S56routing restart
+```
+
+## Advanced Configuration
+
+### Changing cache settings
+
+Edit `/opt/etc/dnsmasq.conf` to adjust cache settings:
+
+```
+cache-size=4096
+min-cache-ttl=3600
+```
+
+### Storing resolved_ips.list in RAM for performance
+
+Edit `/opt/bin/update_ips.sh` and change:
+
+```bash
+RESOLVED_IPS_FILE="/opt/etc/resolved_ips.list"
+```
+
+To:
+
+```bash
+RESOLVED_IPS_FILE="/tmp/resolved_ips.list"
+```
+
+Don't forget to update the reference in `dnsmasq.conf` as well.
+
+## Support
+
+For issues, please check the logs at:
+- `/opt/var/log/dnsmasq.log`
+- `/opt/var/log/update_ips.log`
