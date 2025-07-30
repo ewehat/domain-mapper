@@ -31,6 +31,26 @@ sh /tmp/install.sh
 
 Alternatively, you can manually install each component following the steps below.
 
+## Uninstallation
+
+To remove the domain routing configuration while preserving installed packages:
+
+```bash
+wget -O /tmp/uninstall.sh https://raw.githubusercontent.com/yourusername/keenetic-domain-routing/master/uninstall.sh
+chmod +x /tmp/uninstall.sh
+sh /tmp/uninstall.sh
+```
+
+The uninstall script will:
+- Stop domain routing services
+- Remove custom iptables rules and ipsets
+- Remove configuration files and directories
+- Remove cron jobs
+- Clean up log files
+- **Preserve installed packages** (dnsmasq-full, ipset, iptables, bind-dig, cron)
+
+After uninstallation, you may need to manually check your router's DNS settings.
+
 ### Manual Installation
 
 1. Install required packages:
