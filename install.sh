@@ -169,7 +169,7 @@ cat > /opt/etc/init.d/S56routing << 'EOL'
 # Startup script for domain routing
 
 IPSET_NAME="unblock"
-VPN_INTERFACE="wg0"  # Change to your VPN interface
+VPN_INTERFACE="nwg0"  # Change to your VPN interface
 ROUTE_TABLE="100"
 MARK="0x1"
 
