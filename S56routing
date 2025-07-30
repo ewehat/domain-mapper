@@ -1,0 +1,71 @@
+#!/bin/sh
+# Startup script for domain routing
+# Place in /opt/etc/init.d/S56routing
+
+IPSET_NAME="unblock"
+VPN_INTERFACE="wg0"  # Change to your VPN interface
+ROUTE_TABLE="100"
+MARK="0x1"
+
+start() {
+    echo "Starting domain-based routing..."
+    
+    # Create ipset if it doesn't exist
+    if ! ipset list "$IPSET_NAME" &>/dev/null; then
+        echo "Creating ipset '$IPSET_NAME'"
+        ipset create "$IPSET_NAME" hash:ip maxelem 10000
+    fi
+    
+    # Create routing table if it doesn't exist
+    if ! grep -q "^$ROUTE_TABLE " /etc/iproute2/rt_tables; then
+        echo "$ROUTE_TABLE vpn" >> /etc/iproute2/rt_tables
+    fi
+    
+    # Set up iptables rules for marking packets
+    iptables -t mangle -A PREROUTING -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$MARK"
+    
+    # Set up ip rule for marked packets
+    ip rule add fwmark "$MARK" table "$ROUTE_TABLE"
+    
+    # Set up default route through VPN interface
+    # Get VPN interface gateway
+    VPN_GW=$(ip route | grep "dev $VPN_INTERFACE" | grep -v "link" | awk '{print $1}')
+    if [ -n "$VPN_GW" ]; then
+        ip route add default via "$VPN_GW" dev "$VPN_INTERFACE" table "$ROUTE_TABLE"
+    else
+        echo "Warning: Could not determine VPN gateway. Is VPN interface up?"
+    fi
+    
+    echo "Domain-based routing started"
+}
+
+stop() {
+    echo "Stopping domain-based routing..."
+    
+    # Remove ip rule
+    ip rule del fwmark "$MARK" table "$ROUTE_TABLE" 2>/dev/null
+    
+    # Remove iptables rules
+    iptables -t mangle -D PREROUTING -m set --match-set "$IPSET_NAME" dst -j MARK --set-mark "$MARK" 2>/dev/null
+    
+    echo "Domain-based routing stopped"
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart)
+        stop
+        start
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}"
+        exit 1
+        ;;
+esac
+
+exit 0
