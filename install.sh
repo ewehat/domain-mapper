@@ -183,8 +183,8 @@ start() {
     fi
     
     # Create routing table if it doesn't exist
-    if ! grep -q "^$ROUTE_TABLE " /etc/iproute2/rt_tables; then
-        echo "$ROUTE_TABLE vpn" >> /etc/iproute2/rt_tables
+    if ! grep -q "^$ROUTE_TABLE " /opt/etc/iproute2/rt_tables; then
+        echo "$ROUTE_TABLE vpn" >> /opt/etc/iproute2/rt_tables
     fi
     
     # Set up iptables rules for marking packets
